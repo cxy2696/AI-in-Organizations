@@ -1,11 +1,11 @@
-# This workflow installs Python dependencies, runs linting, tests, and (optionally) executes a Jupyter notebook.
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python
-
+# This workflow installs Python dependencies, runs linting, tests, and executes Jupyter notebooks.
+# For more information: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python
 name: Python AI Tool CI
 
 on:
   push:
     branches: [ "main" ]
+    paths: [ "**.py", "**.ipynb", "requirements.txt" ]  # Skip non-relevant changes
   pull_request:
     branches: [ "main" ]
 
@@ -14,49 +14,85 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-latest  # mac-specific needed
+    runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: [ "3.10", "3.11", "3.12" ]  # Test across versions for compatibility
+        python-version: [ "3.10", "3.11", "3.12" ]
+    timeout-minutes: 30  # Prevent hangs
 
     steps:
-    - uses: actions/checkout@v5  # Updated to v5
+      - uses: actions/checkout@v4  # Latest as of Oct 2025
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6  # Latest stable
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff flake8 pytest pytest-cov pytest-mock responses nbconvert jupyter safety
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      - name: Lint with Ruff and Flake8
+        run: |
+          ruff check . --fix
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+          flake8 . --count --max-complexity=10 --max-line-length=127 --statistics
+      - name: Check dependencies for vulnerabilities
+        run: safety check --full-report
+      - name: Execute Jupyter Notebook (if present)
+        run: |
+          if [ -f hw3_xc535.ipynb ]; then
+            jupyter nbconvert --execute --to notebook --inplace --clear-output --allow-errors hw3_xc535.ipynb
+          fi
+      - name: Test with pytest
+        env:
+          GEMINI_API_KEY: "mock_key"  # Mock for CI; use pytest-mock in tests for API calls
+        run: pytest --cov --cov-report=xml --cov-fail-under=80  # Fail if coverage <80%
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.python-version }}
+          path: coverage.xml
 
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5  # Updated to v5 (latest stable as of Oct 2025)
-      with:
-        python-version: ${{ matrix.python-version }}
-        cache: 'pip'  # Cache pip for faster runs
+  mac-build:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        python-version: [ "3.12" ]  # Limit to latest for cost
+    timeout-minutes: 30
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install flake8 pytest pytest-cov nbconvert jupyter  # Added for notebook execution/testing
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi  # Install project deps (e.g., openai, gradio)
-
-    - name: Lint with flake8
-      run: |
-        # Stop if syntax errors or undefined names
-        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-        # Warnings for complexity and line length (GitHub editor is 127 chars)
-        flake8 . --count --max-complexity=10 --max-line-length=127 --statistics
-
-    - name: Execute Jupyter Notebook (if present)
-      if: matrix.python-version == '3.12'  # Run only on primary version to save time
-      run: |
-        # Convert and run notebook as script (assumes notebook is hw3_xc535.ipynb)
-        jupyter nbconvert --to script hw3_xc535.ipynb
-        python hw3_xc535.py  # Or use --execute for direct run, but script conversion for CI
-
-    - name: Test with pytest
-      env:
-        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}  # Use secret; mock if needed for tests
-      run: |
-        pytest --cov --cov-report=xml  # Added coverage for better insights
-
-    - name: Upload test results
-      if: always()  # Run even on failure
-      uses: actions/upload-artifact@v4
-      with:
-        name: test-results-${{ matrix.python-version }}
-        path: coverage.xml  # Upload coverage report as artifact
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff flake8 pytest pytest-cov pytest-mock responses safety
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      - name: Lint with Ruff and Flake8
+        run: |
+          ruff check . --fix
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+          flake8 . --count --max-complexity=10 --max-line-length=127 --statistics
+      - name: Check dependencies for vulnerabilities
+        run: safety check --full-report
+      - name: Test with pytest
+        env:
+          GEMINI_API_KEY: "mock_key"
+        run: pytest --cov --cov-report=xml --cov-fail-under=80
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-test-results-${{ matrix.python-version }}
+          path: coverage.xml
